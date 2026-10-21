@@ -20,6 +20,7 @@ main() {
 	listen) listen "$name" "${@:2}" ;;
 	hangup) hangup "$name" ;;
 	tell) tell "$name" "${@:2}" ;;
+	relay) relay "$name" "${@:2}" ;;
 	list) list "${2:-}" ;;
 	init) init "${@:2}" ;;
 	serve) serve ;;
@@ -181,6 +182,22 @@ post() {
 	fi
 }
 
+relay() {
+	local agent="${2:?Usage: tincan --as <name> relay <agent> <agent args>}"
+	if [[ ! "$agent" =~ ^[a-z0-9-]+$ || ! -f "$SCRIPT_DIR/adapters/$agent.bash" ]]; then
+		echo "tincan: no adapter for '$agent'; try: $(adapters)" >&2
+		exit 1
+	elif [[ -n "$1" ]]; then
+		# shellcheck source=src/adapters/claude.bash
+		source "$SCRIPT_DIR/adapters/$agent.bash"
+		"$agent" "$1" "${@:3}"
+	fi
+}
+
+adapters() {
+	basename -s .bash "$SCRIPT_DIR"/adapters/*.bash | paste -sd ' '
+}
+
 list() {
 	local peer
 	list_here
@@ -307,6 +324,7 @@ Usage: tincan --as <name> pickup
        tincan --as <name> listen [--since <when>]
        tincan --as <name> hangup
        tincan [--as <name>] tell <name>[@<device>] [message]
+       tincan --as <name> relay <agent> <agent args>
        tincan list [--all]
        tincan init [device]
        tincan serve

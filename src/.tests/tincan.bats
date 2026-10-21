@@ -350,3 +350,15 @@ group() {
 @test "a device not yet initialised goes by its hostname" {
 	[ "$("$TINCAN" whoami)" = "$(hostname)" ]
 }
+
+@test "relay does nothing for a session without a name" {
+	run -0 "$TINCAN" --as "" relay claude 1
+
+	[ ! -e "$TINCAN_DIR" ]
+}
+
+@test "relay names the agents it has adapters for" {
+	run -1 "$TINCAN" --as bob relay nobody 1
+
+	[[ "$output" == *"try: claude"* ]]
+}
