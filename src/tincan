@@ -1,0 +1,320 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Joseph Hale
+# SPDX-License-Identifier: MPL-2.0
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+TINCAN_DIR="${TINCAN_DIR:-${XDG_RUNTIME_DIR:-/tmp}/tincan}"
+TINCAN_HOME="${TINCAN_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/tincan}"
+TINCAN_PORT="${TINCAN_PORT:-11871}"
+
+main() {
+	local name=""
+	if [[ "${1:-}" == --as ]]; then
+		name="${2?Usage: tincan --as <name> <command>}"
+		shift 2
+	fi
+	case "${1:-}" in
+	pickup) pickup "$name" ;;
+	listen) listen "$name" "${@:2}" ;;
+	hangup) hangup "$name" ;;
+	tell) tell "$name" "${@:2}" ;;
+	list) list "${2:-}" ;;
+	init) init "${@:2}" ;;
+	serve) serve ;;
+	service)
+		# shellcheck source=src/service.bash
+		source "$SCRIPT_DIR/service.bash"
+		service "${@:2}"
+		;;
+	pair) pair "${@:2}" ;;
+	forget) forget "${@:2}" ;;
+	whoami) echo "${name:+$name@}$(me)" ;;
+	*)
+		usage >&2
+		exit 1
+		;;
+	esac
+}
+
+pickup() {
+	local sock tries=50
+	sock="$(socket "${1:?Usage: tincan --as <name> pickup}")"
+	install -d -m 700 "$TINCAN_DIR"
+	(
+		set -m
+		receive "$1" </dev/null >/dev/null 2>&1 &
+	)
+	until is_answering "$sock" || ((--tries == 0)); do
+		sleep 0.1
+	done
+	if ! is_answering "$sock"; then
+		echo "tincan: could not pick up $1" >&2
+		exit 1
+	fi
+}
+
+socket() {
+	if [[ ! "$1" =~ ^[A-Za-z0-9._-]+$ ]]; then
+		echo "tincan: '$1' is not a name; use letters, digits, '.', '_' and '-'" >&2
+		exit 1
+	fi
+	echo "$TINCAN_DIR/$1.sock"
+}
+
+receive() {
+	local sock lock
+	sock="$(socket "$1")"
+	exec {lock}>"$TINCAN_DIR/$1.lock"
+	if flock -n "$lock"; then
+		echo "$BASHPID" >"$TINCAN_DIR/$1.pid"
+		exec >>"$TINCAN_DIR/$1.log"
+		socat -u UNIX-LISTEN:"$sock",fork,unlink-early,mode=600 STDOUT |
+			jq -cR --unbuffered 'fromjson? | now as $t | .received_at = ($t | strftime("%FT%T.")) + "\(1000 + $t * 1000 % 1000)"[1:] + "Z"'
+	fi
+}
+
+is_answering() {
+	socat -u /dev/null UNIX-CONNECT:"$1" 2>/dev/null
+}
+
+listen() {
+	local since=""
+	if [[ "${2:-}" == --since ]]; then
+		since="$(parse_time "${3:?Usage: tincan --as <name> listen [--since <when>]}")"
+	fi
+	pickup "$1"
+	replay "$1" "$since"
+}
+
+parse_time() {
+	local -A units=([s]=seconds [m]=minutes [h]=hours [d]=days)
+	if [[ "$1" =~ ^([0-9]+)([smhd])$ ]]; then
+		date -u -d "${BASH_REMATCH[1]} ${units[${BASH_REMATCH[2]}]} ago" +%FT%T.%3NZ
+	else
+		date -u -d "$1" +%FT%T.%3NZ
+	fi
+}
+
+replay() {
+	exec tail -n "+$(find_start "$1" "$2")" --follow --pid="$(<"$TINCAN_DIR/$1.pid")" "$TINCAN_DIR/$1.log"
+}
+
+find_start() {
+	jq -n --arg since "$2" '[inputs | .received_at >= $since] | (index(true) // length) + 1' \
+		"$TINCAN_DIR/$1.log"
+}
+
+hangup() {
+	local sock
+	sock="$(socket "${1:?Usage: tincan --as <name> hangup}")"
+	if is_answering "$sock"; then
+		kill -- -"$(<"$TINCAN_DIR/$1.pid")"
+		flock "$TINCAN_DIR/$1.lock" rm -f "$TINCAN_DIR/$1.log" "$TINCAN_DIR/$1.pid"
+	else
+		echo "tincan: nothing is listening as $1" >&2
+		exit 1
+	fi
+}
+
+tell() {
+	local address="${2:?Usage: tincan [--as <name>] tell <name>[@<device>] [message]}"
+	local message="${3-$(cat)}"
+	seal "$1" "$message" | route "$address"
+}
+
+seal() {
+	jq -nc --arg from "$1" --arg host "$(me)" --arg message "$2" \
+		'{from: $from, host: $host, sent_at: (now | todate), message: $message}'
+}
+
+me() {
+	if [[ -f "$TINCAN_HOME/me.pem" ]]; then
+		common_name <"$TINCAN_HOME/me.pem"
+	else
+		hostname
+	fi
+}
+
+common_name() {
+	openssl x509 -noout -subject -nameopt multiline | sed -n 's/^ *commonName *= //p'
+}
+
+route() {
+	local name="${1%@*}"
+	local device="${1#*@}"
+	if [[ "$1" == *@* && "$device" != "$(me)" ]]; then
+		ask "$device" "post $name"
+	else
+		post "$name"
+	fi
+}
+
+ask() {
+	local reply
+	reply="$({
+		echo "$2"
+		cat
+	} | dial "$1")"
+	if [[ "$reply" != delivered ]]; then
+		echo "${reply:-tincan: $1 refused this device}" >&2
+		exit 1
+	fi
+}
+
+dial() {
+	local address="OPENSSL:$1:$TINCAN_PORT,cert=$TINCAN_HOME/me.pem,cafile=$TINCAN_HOME/peers/$1.pem,commonname=$1,connect-timeout=3"
+	socket "$1" >/dev/null
+	if ! socat - "$address" 2>/dev/null; then
+		echo "tincan: $1 did not answer, or is not who its certificate says" >&2
+		exit 1
+	fi
+}
+
+post() {
+	local sock
+	sock="$(socket "$1")"
+	if ! socat -u STDIN UNIX-CONNECT:"$sock" 2>/dev/null; then
+		echo "tincan: nothing is listening as $1 on $(me)" >&2
+		exit 1
+	fi
+}
+
+list() {
+	local peer
+	list_here
+	for peer in "$TINCAN_HOME"/peers/*.pem; do
+		peer="$(basename "$peer" .pem)"
+		if [[ "$peer" != "*" && "$peer" != "$(me)" ]]; then
+			if ! echo list | dial "$peer" 2>/dev/null && [[ "$1" == --all ]]; then
+				echo "$peer (unreachable)"
+			fi
+		fi
+	done
+}
+
+list_here() {
+	local sock
+	for sock in "$TINCAN_DIR"/*.sock; do
+		if is_answering "$sock"; then
+			echo "$(basename "$sock" .sock)@$(me)"
+		fi
+	done
+}
+
+init() {
+	local name="${1:-$(hostname)}"
+	socket "$name" >/dev/null
+	install -d -m 700 "$TINCAN_HOME" "$TINCAN_HOME/peers"
+	retire
+	openssl req -x509 -newkey ed25519 -nodes -days 36500 -subj "/CN=$name" \
+		-addext "subjectAltName=DNS:$name" -keyout "$TINCAN_HOME/me.pem" \
+		-out "$TINCAN_HOME/peers/$name.pem" 2>/dev/null
+	cat "$TINCAN_HOME/peers/$name.pem" >>"$TINCAN_HOME/me.pem"
+	echo "This device is $name. Pair it with another: tincan pair <device>"
+}
+
+retire() {
+	if [[ -f "$TINCAN_HOME/me.pem" ]]; then
+		rm -f "$TINCAN_HOME/peers/$(me).pem"
+	fi
+}
+
+serve() {
+	local address
+	address="OPENSSL-LISTEN:$TINCAN_PORT,${TINCAN_BIND:+bind=$TINCAN_BIND,}fork,reuseaddr,cert=$TINCAN_HOME/me.pem,capath=$TINCAN_HOME/peers,verify=1"
+	if [[ -v SOCAT_PEERADDR ]]; then
+		handle
+	else
+		openssl rehash "$TINCAN_HOME/peers"
+		exec socat "$address" EXEC:"$0 serve",stderr
+	fi
+}
+
+handle() {
+	local command name
+	local peer="${SOCAT_OPENSSL_X509_COMMONNAME:-}"
+	read -r command name
+	if [[ ! -f "$TINCAN_HOME/peers/$peer.pem" ]]; then
+		echo "tincan: $(me) does not count $peer in its group"
+	elif [[ "$command" == post ]]; then
+		jq -c --arg host "$peer" '.host = $host' | post "$name" && echo delivered
+	elif [[ "$command" == list ]]; then
+		list_here
+	fi
+}
+
+pair() {
+	local device="${1:?Usage: tincan pair <device>}"
+	local cert answer
+	cert="$(fetch "$device")"
+	echo "code: $(code "$cert")"
+	read -r -p "Does $device show the same code? [y/N] " answer
+	if [[ "$answer" == y ]]; then
+		trust "$device" "$cert"
+	else
+		echo "tincan: not paired with $device" >&2
+		exit 1
+	fi
+}
+
+fetch() {
+	local cert
+	socket "$1" >/dev/null
+	cert="$(timeout 3 openssl s_client -connect "$1:$TINCAN_PORT" -servername "$1" </dev/null 2>/dev/null | openssl x509 2>/dev/null)" || true
+	if [[ -z "$cert" ]]; then
+		echo "tincan: waited 3s for tincan serve at $1:$TINCAN_PORT ($(resolve "$1")) and heard nothing" >&2
+		exit 1
+	elif [[ "$(common_name <<<"$cert")" != "$1" ]]; then
+		echo "tincan: $1 answered with a certificate for $(common_name <<<"$cert")" >&2
+		exit 1
+	fi
+	echo "$cert"
+}
+
+resolve() {
+	getent ahosts "$1" | awk '{print $1; exit}' | grep . || echo "no address"
+}
+
+code() {
+	{
+		fingerprint <"$TINCAN_HOME/me.pem"
+		fingerprint <<<"$1"
+	} | sort | sha256sum | cut -c1-32 | sed 's/..../&-/g; s/-$//'
+}
+
+fingerprint() {
+	openssl x509 -noout -fingerprint -sha256 | cut -d= -f2
+}
+
+trust() {
+	echo "$2" >"$TINCAN_HOME/peers/$1.pem"
+	openssl rehash "$TINCAN_HOME/peers"
+	echo "Paired with $1. It can reach this device once it pairs back."
+}
+
+forget() {
+	local device="${1:?Usage: tincan forget <device>}"
+	socket "$device" >/dev/null
+	rm "$TINCAN_HOME/peers/$device.pem"
+	openssl rehash "$TINCAN_HOME/peers"
+}
+
+usage() {
+	cat <<'EOF'
+Usage: tincan --as <name> pickup
+       tincan --as <name> listen [--since <when>]
+       tincan --as <name> hangup
+       tincan [--as <name>] tell <name>[@<device>] [message]
+       tincan list [--all]
+       tincan init [device]
+       tincan serve
+       tincan service install|uninstall|start|stop|status
+       tincan pair <device>
+       tincan forget <device>
+       tincan [--as <name>] whoami
+EOF
+}
+
+main "$@"

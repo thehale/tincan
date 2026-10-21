@@ -33,7 +33,7 @@ function main() {
 		check "Bash: Format" "filelike bash | xargs shfmt --diff"
 		check "Bash: Order" "filelike bash | bashorder check"
 		check "Bash: Portability" "filelike bash | bin/check/portable"
-		check "Bash: Test" "BATS_TEST_TIMEOUT=10 bats --recursive bin"
+		check "Bash: Test" "BATS_TEST_TIMEOUT=10 bats --recursive bin src"
 		check "Actions: Lint" "actionlint"
 		check "Actions: Audit" "zizmor --quiet .github"
 		check "YAML: Format" "bin/check/yamlformat"
