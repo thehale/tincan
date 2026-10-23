@@ -5,6 +5,7 @@
 bats_require_minimum_version 1.5.0
 
 setup() {
+	command -v socat >/dev/null || skip "tincan needs socat, which this device does not have"
 	TINCAN="$BATS_TEST_DIRNAME/../tincan"
 	cd "${BATS_TEST_TMPDIR:?}"
 
