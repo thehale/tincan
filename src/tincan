@@ -11,6 +11,7 @@ TINCAN_PORT="${TINCAN_PORT:-11871}"
 
 main() {
 	local name=""
+	require socat
 	if [[ "${1:-}" == --as ]]; then
 		name="${2?Usage: tincan --as <name> <command>}"
 		shift 2
@@ -37,6 +38,13 @@ main() {
 		exit 1
 		;;
 	esac
+}
+
+require() {
+	if ! command -v "$1" >/dev/null; then
+		echo "tincan: needs $1, which this device does not have" >&2
+		exit 1
+	fi
 }
 
 pickup() {
