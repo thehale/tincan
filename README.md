@@ -20,6 +20,15 @@ curving string, like a toy tin-can telephone">
 [![Follow Joseph Hale on LinkedIn](https://jhale.dev/badges/follow.svg)](https://www.linkedin.com/comm/mynetwork/discovery-see-all?usecase=PEOPLE_FOLLOWS&followMember=thehale)
 </div>
 
+## Install
+
+tincan is one bash script for Linux, over socat, jq and openssl. Put
+`src/tincan` on your PATH, and source `src/tincan.bash` for completion.
+
+```bash
+ln -s "$PWD/src/tincan" ~/.local/bin/tincan
+```
+
 ## Quickstart
 
 Listen under a name in one terminal, and tell it something from another.
