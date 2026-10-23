@@ -333,7 +333,7 @@ group() {
 @test "a device initialised without a name takes its hostname" {
 	"$TINCAN" init >/dev/null
 
-	[ "$(openssl x509 -noout -subject -in "$TINCAN_HOME/me.pem")" = "subject=CN=$(hostname)" ]
+	[ "$(openssl x509 -noout -subject -nameopt RFC2253 -in "$TINCAN_HOME/me.pem")" = "subject=CN=$(hostname)" ]
 }
 
 @test "a device initialised again under a new name no longer trusts its old name" {
