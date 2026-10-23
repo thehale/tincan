@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Joseph Hale
+# SPDX-License-Identifier: MPL-2.0
+
+# Usage: bin/check/yamlformat [--fix]
+
+set -euo pipefail
+
+PATHS=(
+	".github"
+)
+
+CONFIG='
+formatter:
+  type: basic
+  retain_line_breaks_single: true
+'
+
+CONFIG_DIR=""
+
+main() {
+	trap cleanup EXIT
+	write_config
+
+	if [[ "${1:-}" == "--fix" ]]; then
+		yamlfmt -conf "$CONFIG_DIR/.yamlfmt" "${PATHS[@]}"
+	else
+		yamlfmt -conf "$CONFIG_DIR/.yamlfmt" -lint "${PATHS[@]}"
+	fi
+}
+
+write_config() {
+	CONFIG_DIR="$(mktemp -d)"
+	printf '%s\n' "$CONFIG" >"$CONFIG_DIR/.yamlfmt"
+}
+
+cleanup() {
+	if [[ -n "$CONFIG_DIR" ]]; then
+		rm -rf "$CONFIG_DIR"
+	fi
+}
+
+main "$@"

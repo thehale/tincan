@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Joseph Hale
+# SPDX-License-Identifier: MPL-2.0
+
+# Usage: bin/publish [--dry-run]
+
+set -euo pipefail
+
+# shellcheck source=bin/lib/colors
+source "$(dirname "${BASH_SOURCE[0]}")/lib/colors"
+
+BRANCH="main"
+RELEASE_TAG="^v[0-9]+\.[0-9]+\.[0-9]+$"
+DRY_RUN="no"
+
+main() {
+	refuse_automation
+	confirm_arguments "$@"
+	confirm_checks
+	confirm_branch
+	confirm_clean_tree
+	confirm_release_tag
+	confirm_pushed_branch
+	confirm_remote_tag
+	publish
+}
+
+refuse_automation() {
+	if [[ -n "${CI:-}" ]]; then
+		refuse "CI publishes nothing. Run bin/publish from a workstation."
+	fi
+}
+
+refuse() {
+	red "$1" >&2
+
+	if [[ $# -gt 1 ]]; then
+		echo >&2
+		blue "    $2" >&2
+		echo >&2
+	fi
+
+	exit 1
+}
+
+confirm_arguments() {
+	if [[ $# -eq 1 && "$1" == "--dry-run" ]]; then
+		DRY_RUN="yes"
+	elif [[ $# -gt 0 ]]; then
+		refuse "The only argument this takes is --dry-run. Usage: bin/publish [--dry-run]" \
+			"bin/publish --dry-run"
+	fi
+}
+
+confirm_checks() {
+	if ! bin/ci; then
+		refuse "bin/ci failed. A release is cut from a checkout that passes." \
+			"bin/ci --fix  # NOTE: not every problem is autofixable"
+	fi
+}
+
+confirm_branch() {
+	local branch
+	branch="$(git rev-parse --abbrev-ref HEAD)"
+
+	if [[ "$branch" != "$BRANCH" ]]; then
+		refuse "On $branch. A release is published from $BRANCH." \
+			"git switch $BRANCH"
+	fi
+}
+
+confirm_clean_tree() {
+	if [[ -n "$(git status --porcelain)" ]]; then
+		refuse "The working tree has changes. Commit them or put them aside." \
+			"git add . && git stash"
+	fi
+}
+
+confirm_release_tag() {
+	if [[ -z "$(release_tag)" ]]; then
+		refuse "HEAD carries no vX.Y.Z tag. Tag the commit you mean to release." \
+			"git tag vX.Y.Z"
+	fi
+}
+
+release_tag() {
+	git tag --points-at HEAD | grep -E "$RELEASE_TAG" | head -n 1 || true
+}
+
+confirm_pushed_branch() {
+	local pushed
+	pushed="$(remote_object "refs/heads/$BRANCH")"
+
+	if [[ -z "$pushed" ]]; then
+		refuse "origin has no $BRANCH. A release nobody can fetch is not a release." \
+			"git push origin $BRANCH"
+	fi
+
+	if [[ "$pushed" != "$(git rev-parse "HEAD^{}")" ]]; then
+		refuse "origin/$BRANCH is a different commit. Send $BRANCH there first." \
+			"git push origin $BRANCH"
+	fi
+}
+
+remote_object() {
+	git ls-remote origin "$1" | cut -f 1 | tail -n 1
+}
+
+confirm_remote_tag() {
+	local tag pushed
+	tag="$(release_tag)"
+	pushed="$(remote_object "refs/tags/$tag")"
+
+	if [[ -n "$pushed" && "$pushed" != "$(git rev-parse "refs/tags/$tag")" ]]; then
+		refuse "origin already carries a different $tag. Reconcile them by hand." \
+			"git ls-remote origin refs/tags/$tag"
+	fi
+}
+
+publish() {
+	local tag
+	tag="$(release_tag)"
+
+	if [[ "$DRY_RUN" == "yes" ]]; then
+		rehearse "$tag"
+	else
+		perform "$tag"
+	fi
+}
+
+rehearse() {
+	yellow "Rehearsing the push of $1 to origin"
+	git push --dry-run origin "refs/tags/$1"
+	green "Rehearsed $1. Run bin/publish to publish it."
+}
+
+perform() {
+	yellow "Pushing $1 to origin"
+	git push origin "refs/tags/$1"
+	green "Published $1"
+}
+
+main "$@"

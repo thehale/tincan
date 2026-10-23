@@ -1,0 +1,7 @@
+/CLAUDE.md
+/.claude/
+
+mise.local.toml
+mise.*.local.toml
+.mise.local.toml
+.mise.*.local.toml

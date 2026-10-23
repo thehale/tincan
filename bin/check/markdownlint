@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Joseph Hale
+# SPDX-License-Identifier: MPL-2.0
+
+# Usage: bin/check/markdownlint [--fix]
+
+set -euo pipefail
+
+# shellcheck source=bin/lib/filelike
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/filelike"
+
+CONFIG='
+# no-inline-html
+MD033: false
+
+# first-line-heading
+MD041: false
+
+# line-length
+MD013:
+  tables: false
+  code_blocks: false
+'
+
+CONFIG_DIR=""
+
+main() {
+	trap cleanup EXIT
+	write_config
+	lint "$@"
+}
+
+write_config() {
+	CONFIG_DIR="$(mktemp -d)"
+	printf '%s\n' "$CONFIG" >"$CONFIG_DIR/.markdownlint.yaml"
+}
+
+lint() {
+	filelike markdown |
+		xargs -r \
+			markdownlint-cli2 --config "$CONFIG_DIR/.markdownlint.yaml" "$@"
+}
+
+cleanup() {
+	if [[ -n "$CONFIG_DIR" ]]; then
+		rm -rf "$CONFIG_DIR"
+	fi
+}
+
+main "$@"

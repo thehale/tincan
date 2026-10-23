@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Joseph Hale
+# SPDX-License-Identifier: MPL-2.0
+
+# Usage: bin/prepare/add-git-hooks
+
+set -euo pipefail
+
+HOOKS="bin/.hooks"
+
+main() {
+	if ! git rev-parse --git-dir &>/dev/null; then
+		echo "Not a git repository. Skipping hooks."
+		return 0
+	fi
+
+	git config core.hooksPath "$HOOKS"
+	echo "Hooks added from $HOOKS"
+}
+
+main "$@"

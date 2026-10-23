@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Joseph Hale
+# SPDX-License-Identifier: MPL-2.0
+
+# Usage: source bin/lib/timing; elapsed "$started"
+
+microseconds_since_epoch() {
+	if [[ -n "${EPOCHREALTIME:-}" ]]; then
+		local now="$EPOCHREALTIME"
+		echo "${now//[.,]/}"
+		return
+	fi
+
+	local nanoseconds
+	nanoseconds="$(date +%s%N)"
+
+	if [[ "$nanoseconds" =~ ^[0-9]{19}$ ]]; then
+		echo "$((nanoseconds / 1000))"
+	else
+		echo "$(date +%s)000000"
+	fi
+}
+
+elapsed() {
+	local micros=$(($(microseconds_since_epoch) - $1))
+	printf '%d.%02ds\n' "$((micros / 1000000))" "$((micros % 1000000 / 10000))"
+}
