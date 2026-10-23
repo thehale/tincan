@@ -25,18 +25,23 @@ wait_for() {
 	done
 }
 
-session() {
+start_session() {
 	export CLAUDE_CODE_MESSAGING_SOCKET="$PWD/session.sock"
 	socat -u UNIX-LISTEN:"$CLAUDE_CODE_MESSAGING_SOCKET",fork STDOUT >session.heard 3>&- &
+	start_relay "$1"
+}
+
+start_relay() {
 	sleep 60 3>&- &
 	SESSION=$!
 	"$TINCAN" --as "$1" relay claude "$SESSION" 3>&- &
 	RELAY=$!
-	wait_for held "$TINCAN_DIR/$1.$SESSION.relay"
+	RELAYS=$((${RELAYS:-0} + 1))
+	wait_for is_forwarded_by "$1" "$RELAYS"
 }
 
-held() {
-	[[ -e "$1" ]] && ! flock -n "$1" true
+is_forwarded_by() {
+	[ "$(ps -eo args | grep -c "^tail .* $TINCAN_DIR/$1.log$")" -eq "$2" ]
 }
 
 end_session() {
@@ -44,9 +49,25 @@ end_session() {
 	wait_for test ! -e "/proc/$RELAY"
 }
 
+receiver() {
+	cat "$TINCAN_DIR/$1.pid" 2>/dev/null
+}
+
+is_listening() {
+	socat -u /dev/null UNIX-CONNECT:"$TINCAN_DIR/$1.sock" 2>/dev/null
+}
+
+is_picked_up_again() {
+	[[ "$(receiver "$1")" != "$2" ]] && is_listening "$1"
+}
+
+prompts() {
+	grep '"user"' session.heard | jq -r .message.content | paste -sd,
+}
+
 @test "relay hands each message to a Claude session as a line saying who sent it" {
 	"$TINCAN" init desk >/dev/null
-	session bob
+	start_session bob
 
 	"$TINCAN" --as alice tell bob "hi"
 	wait_for grep -q '"user"' session.heard
@@ -57,7 +78,7 @@ end_session() {
 
 @test "a message sent without a name is credited to its device" {
 	"$TINCAN" init desk >/dev/null
-	session bob
+	start_session bob
 
 	"$TINCAN" tell bob "hi"
 	wait_for grep -q '"user"' session.heard
@@ -67,7 +88,7 @@ end_session() {
 }
 
 @test "relay stops listening when the session ends" {
-	session bob
+	start_session bob
 
 	end_session
 
@@ -76,7 +97,7 @@ end_session() {
 }
 
 @test "a relay started again for the same session leaves the first one to prompt it" {
-	session bob
+	start_session bob
 
 	run -0 timeout 5 "$TINCAN" --as bob relay claude "$SESSION" 3>&-
 	"$TINCAN" --as alice tell bob "just once"
@@ -84,4 +105,48 @@ end_session() {
 	end_session
 
 	[ "$(grep -c '"user"' session.heard)" -eq 1 ]
+}
+
+@test "a relay picks the name up again when someone hangs it up" {
+	"$TINCAN" init desk >/dev/null
+	start_session bob
+	"$TINCAN" --as bob hangup
+
+	wait_for is_listening bob
+	"$TINCAN" --as alice tell bob "still there?"
+	wait_for grep -q '"user"' session.heard
+	end_session
+
+	[ "$(prompts)" = "alice@desk: still there?" ]
+}
+
+@test "a relay keeps its session listening after an earlier session on the same name ends" {
+	"$TINCAN" init desk >/dev/null
+	start_session bob
+	local earlier_session=$SESSION earlier_relay=$RELAY
+	start_relay bob
+	kill "$earlier_session"
+	wait_for test ! -e "/proc/$earlier_relay"
+
+	wait_for is_listening bob
+	"$TINCAN" --as alice tell bob "still there?"
+	wait_for grep -q '"user"' session.heard
+	end_session
+
+	[ "$(prompts)" = "alice@desk: still there?" ]
+}
+
+@test "a relay that picks the name up again does not forward what it already forwarded" {
+	"$TINCAN" init desk >/dev/null
+	start_session bob
+	"$TINCAN" --as alice tell bob "once"
+	wait_for grep -q once session.heard
+	kill -- -"$(receiver bob)"
+
+	wait_for is_picked_up_again bob "$(receiver bob)"
+	"$TINCAN" --as alice tell bob "twice"
+	wait_for grep -q twice session.heard
+	end_session
+
+	[ "$(prompts)" = "alice@desk: once,alice@desk: twice" ]
 }

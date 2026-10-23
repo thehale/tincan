@@ -5,19 +5,35 @@
 
 claude() {
 	local session="${2:?Usage: tincan --as <name> relay claude <claude-pid>}"
-	local since lock
-	since="$(parse_time now)"
-	pickup "$1"
-	exec {lock}>"$TINCAN_DIR/$1.$session.relay"
-	if flock -n "$lock"; then
-		forward "$1" "$session" "$since"
+	if attach "$1" "$session"; then
+		while is_alive "$session"; do
+			listen_from_now "$1" "$session"
+		done
+		hangup "$1"
 	fi
+}
+
+attach() {
+	install -d -m 700 "$TINCAN_DIR"
+	exec {RELAY_LOCK}>"$TINCAN_DIR/$1.$2.relay"
+	flock -n "$RELAY_LOCK"
+}
+
+is_alive() {
+	kill -0 "$1" 2>/dev/null
+}
+
+listen_from_now() {
+	local since
+	since="$(parse_time now)"
+	(pickup "$1") {RELAY_LOCK}>&-
+	forward "$1" "$2" "$since"
 }
 
 forward() {
 	replay "$1" "$3" > >(prompt_session) &
-	outlast "$2"
-	hangup "$1"
+	outlast "$2" &
+	wait_for_either
 }
 
 prompt_session() {
@@ -33,7 +49,15 @@ render_prompt() {
 }
 
 outlast() {
-	while kill -0 "$1" 2>/dev/null; do
+	while is_alive "$1"; do
 		sleep 1
 	done
+}
+
+wait_for_either() {
+	local pids
+	mapfile -t pids < <(jobs -p)
+	wait -n "${pids[@]}" || true
+	kill "${pids[@]}" 2>/dev/null || true
+	wait
 }
