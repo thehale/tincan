@@ -183,6 +183,15 @@ group() {
 	run -1 "$TINCAN" tell bob "hello?"
 }
 
+@test "a forced hangup of a name without a relay stops its listeners" {
+	listen_as bob
+
+	"$TINCAN" --as bob hangup --force
+	wait "$LISTENER"
+
+	run -1 "$TINCAN" tell bob "hello?"
+}
+
 @test "hanging up a name nobody listens as fails and says so" {
 	run -1 "$TINCAN" --as nobody hangup
 

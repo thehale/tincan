@@ -19,7 +19,7 @@ main() {
 	case "${1:-}" in
 	pickup) pickup "$name" ;;
 	listen) listen "$name" "${@:2}" ;;
-	hangup) hangup "$name" ;;
+	hangup) hangup "$name" "${@:2}" ;;
 	tell) tell "$name" "${@:2}" ;;
 	relay) relay "$name" "${@:2}" ;;
 	list) list "${2:-}" ;;
@@ -117,14 +117,41 @@ find_start() {
 
 hangup() {
 	local sock
-	sock="$(socket "${1:?Usage: tincan --as <name> hangup}")"
-	if is_answering "$sock"; then
+	sock="$(socket "${1:?Usage: tincan --as <name> hangup [--force]}")"
+	if [[ "${2:-}" == --force ]]; then
+		stop_relays "$1"
+	fi
+	if is_relayed "$1"; then
+		echo "tincan: a relay keeps $1 listening; hang up with --force to stop it too" >&2
+		exit 1
+	elif is_answering "$sock"; then
 		kill -- -"$(<"$TINCAN_DIR/$1.pid")"
 		flock "$TINCAN_DIR/$1.lock" rm -f "$TINCAN_DIR/$1.log" "$TINCAN_DIR/$1.pid"
 	else
 		echo "tincan: nothing is listening as $1" >&2
 		exit 1
 	fi
+}
+
+stop_relays() {
+	local relay
+	while IFS= read -r relay; do
+		kill "$(<"$relay")" 2>/dev/null || true
+		flock "$relay" true
+	done < <(relays "$1")
+}
+
+relays() {
+	local relay
+	for relay in "$TINCAN_DIR/$1".*.relay; do
+		if [[ "${relay##*/}" =~ ^"$1"\.[0-9]+\.relay$ ]] && ! flock -n "$relay" true; then
+			echo "$relay"
+		fi
+	done
+}
+
+is_relayed() {
+	[[ -n "$(relays "$1")" ]]
 }
 
 tell() {
@@ -330,7 +357,7 @@ usage() {
 	cat <<'EOF'
 Usage: tincan --as <name> pickup
        tincan --as <name> listen [--since <when>]
-       tincan --as <name> hangup
+       tincan --as <name> hangup [--force]
        tincan [--as <name>] tell <name>[@<device>] [message]
        tincan --as <name> relay <agent> <agent args>
        tincan list [--all]

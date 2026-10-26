@@ -107,17 +107,36 @@ prompts() {
 	[ "$(grep -c '"user"' session.heard)" -eq 1 ]
 }
 
-@test "a relay picks the name up again when someone hangs it up" {
+@test "hanging up a name a relay keeps listening fails and says so" {
 	"$TINCAN" init desk >/dev/null
 	start_session bob
-	"$TINCAN" --as bob hangup
 
-	wait_for is_listening bob
+	run -1 "$TINCAN" --as bob hangup
 	"$TINCAN" --as alice tell bob "still there?"
 	wait_for grep -q '"user"' session.heard
 	end_session
 
+	[[ "$output" == *"a relay keeps bob listening"* ]]
 	[ "$(prompts)" = "alice@desk: still there?" ]
+}
+
+@test "a forced hangup stops the relay along with the listener" {
+	start_session bob
+
+	"$TINCAN" --as bob hangup --force
+
+	[ ! -e "/proc/$RELAY" ]
+	! is_listening bob
+}
+
+@test "a forced hangup while a relay picks the name up again leaves the name silent" {
+	start_session bob
+	kill -- -"$(receiver bob)"
+
+	run "$TINCAN" --as bob hangup --force
+
+	[ ! -e "/proc/$RELAY" ]
+	! is_listening bob
 }
 
 @test "a relay keeps its session listening after an earlier session on the same name ends" {
@@ -126,9 +145,9 @@ prompts() {
 	local earlier_session=$SESSION earlier_relay=$RELAY
 	start_relay bob
 	kill "$earlier_session"
-	wait_for test ! -e "/proc/$earlier_relay"
+	wait "$earlier_relay"
 
-	wait_for is_listening bob
+	is_listening bob
 	"$TINCAN" --as alice tell bob "still there?"
 	wait_for grep -q '"user"' session.heard
 	end_session

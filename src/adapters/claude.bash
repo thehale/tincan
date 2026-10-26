@@ -9,14 +9,25 @@ claude() {
 		while is_alive "$session"; do
 			listen_from_now "$1" "$session"
 		done
-		hangup "$1"
+		detach "$1"
 	fi
 }
 
 attach() {
+	local relay="$TINCAN_DIR/$1.$2.relay"
 	install -d -m 700 "$TINCAN_DIR"
-	exec {RELAY_LOCK}>"$TINCAN_DIR/$1.$2.relay"
-	flock -n "$RELAY_LOCK"
+	exec {RELAY_LOCK}>>"$relay"
+	if flock -n "$RELAY_LOCK"; then
+		echo "$$" >"$relay"
+		trap drop_off TERM
+	else
+		false
+	fi
+}
+
+drop_off() {
+	jobs -p | xargs -r kill 2>/dev/null || true
+	exit
 }
 
 is_alive() {
@@ -60,4 +71,11 @@ wait_for_either() {
 	wait -n "${pids[@]}" || true
 	kill "${pids[@]}" 2>/dev/null || true
 	wait
+}
+
+detach() {
+	flock -u "$RELAY_LOCK"
+	if ! is_relayed "$1"; then
+		hangup "$1"
+	fi
 }
